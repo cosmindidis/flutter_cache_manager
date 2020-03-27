@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_cache_manager/src/cache_object.dart';
 import 'package:flutter_cache_manager/src/file_info.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 ///Flutter Cache Manager
@@ -35,8 +36,16 @@ class CacheStore {
     _cacheObjectProvider = _getObjectProvider();
   }
 
+  Future<Directory> getPrivateDirectory() async {
+    if (Platform.isIOS)
+      return await getLibraryDirectory();
+    else
+      return await getApplicationDocumentsDirectory();
+  }
+
   Future<CacheObjectProvider> _getObjectProvider() async {
-    var databasesPath = await getDatabasesPath();
+//    var databasesPath = await getDatabasesPath();
+    var databasesPath = (await getPrivateDirectory()).path;
     var path = p.join(databasesPath, "$storeKey.db");
 
     // Make sure the directory exists
