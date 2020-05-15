@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter_cache_manager/src/cache_object.dart';
-import 'package:flutter_cache_manager/src/file_info.dart';
+import 'package:file/file.dart' as f;
+import 'package:flutter_cache_manager/src/storage/cache_info_repository.dart';
+import 'package:flutter_cache_manager/src/storage/cache_object.dart';
+import 'package:flutter_cache_manager/src/result/file_info.dart';
+import 'package:flutter_cache_manager/src/storage/cache_object_provider.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import 'package:pedantic/pedantic.dart';
 import 'package:sqflite/sqflite.dart';
 
 ///Flutter Cache Manager
@@ -12,62 +15,51 @@ import 'package:sqflite/sqflite.dart';
 ///Released under MIT License.
 
 class CacheStore {
-  Map<String, Future<CacheObject>> _futureCache = new Map();
-  Map<String, CacheObject> _memCache = new Map();
+  Duration cleanupRunMinInterval;
 
-  Future<String> filePath;
-  String _filePath;
+  final _futureCache = <String, Future<CacheObject>>{};
+  final _memCache = <String, CacheObject>{};
 
-  Future<CacheObjectProvider> _cacheObjectProvider;
-  String storeKey;
+  Future<f.Directory> fileDir;
+  f.Directory _fileDir;
 
+  final String storeKey;
+  Future<CacheInfoRepository> _cacheInfoRepository;
   final int _capacity;
   final Duration _maxAge;
 
   DateTime lastCleanupRun = DateTime.now();
-  static const Duration cleanupRunMinInterval = Duration(seconds: 10);
   Timer _scheduledCleanup;
 
   CacheStore(
-      Future<String> basePath, this.storeKey, this._capacity, this._maxAge) {
-    filePath = basePath;
-    basePath.then((p) => _filePath = p);
-
-    _cacheObjectProvider = _getObjectProvider();
+      Future<f.Directory> basedir, this.storeKey, this._capacity, this._maxAge,
+      {Future<CacheInfoRepository> cacheRepoProvider,
+      this.cleanupRunMinInterval = const Duration(seconds: 10)}) {
+    fileDir = basedir.then((dir) => _fileDir = dir);
+    _cacheInfoRepository = cacheRepoProvider ?? _getObjectProvider();
   }
 
-  Future<Directory> getPrivateDirectory() async {
-    if (Platform.isIOS)
-      return await getLibraryDirectory();
-    else
-      return await getApplicationDocumentsDirectory();
-  }
-
-  Future<CacheObjectProvider> _getObjectProvider() async {
-//    var databasesPath = await getDatabasesPath();
+  Future<CacheInfoRepository> _getObjectProvider() async {
+//    final databasesPath = await getDatabasesPath();
     var databasesPath = (await getPrivateDirectory()).path;
-    var path = p.join(databasesPath, "$storeKey.db");
-
-    // Make sure the directory exists
     try {
       await Directory(databasesPath).create(recursive: true);
     } catch (_) {}
-    final provider = CacheObjectProvider(path);
+    final provider = CacheObjectProvider(p.join(databasesPath, '$storeKey.db'));
     await provider.open();
     return provider;
   }
 
   Future<FileInfo> getFile(String url) async {
-    var cacheObject = await retrieveCacheData(url);
+    final cacheObject = await retrieveCacheData(url);
     if (cacheObject == null || cacheObject.relativePath == null) {
       return null;
     }
-    var path = p.join(await filePath, cacheObject.relativePath);
-    return new FileInfo(
-        File(path), FileSource.Cache, cacheObject.validTill, url);
+    final file = (await fileDir).childFile(cacheObject.relativePath);
+    return FileInfo(file, FileSource.Cache, cacheObject.validTill, url);
   }
 
-  putFile(CacheObject cacheObject) async {
+  Future<void> putFile(CacheObject cacheObject) async {
     _memCache[cacheObject.url] = cacheObject;
     await _updateCacheDataInDatabase(cacheObject);
   }
@@ -77,11 +69,11 @@ class CacheStore {
       return Future.value(_memCache[url]);
     }
     if (!_futureCache.containsKey(url)) {
-      var completer = new Completer<CacheObject>();
+      final completer = Completer<CacheObject>();
       _getCacheDataFromDatabase(url).then((cacheObject) async {
         if (cacheObject != null && !await _fileExists(cacheObject)) {
-          final provider = await _cacheObjectProvider;
-          provider.delete(cacheObject.id);
+          final provider = await _cacheInfoRepository;
+          unawaited(provider.delete(cacheObject.id));
           cacheObject = null;
         }
         completer.complete(cacheObject);
@@ -89,35 +81,35 @@ class CacheStore {
         _memCache[url] = cacheObject;
         _futureCache[url] = null;
       });
-
       _futureCache[url] = completer.future;
     }
     return _futureCache[url];
   }
 
   FileInfo getFileFromMemory(String url) {
-    if (_memCache[url] == null || _filePath == null) {
+    if (_memCache[url] == null || _fileDir == null) {
       return null;
     }
-    var cacheObject = _memCache[url];
-
-    var path = p.join(_filePath, cacheObject.relativePath);
-    return new FileInfo(
-        File(path), FileSource.Cache, cacheObject.validTill, url);
+    final cacheObject = _memCache[url];
+    final file = _fileDir.childFile(cacheObject.relativePath);
+    return FileInfo(file, FileSource.Cache, cacheObject.validTill, url);
   }
 
   Future<bool> _fileExists(CacheObject cacheObject) async {
     if (cacheObject?.relativePath == null) {
       return false;
     }
-    return new File(p.join(await filePath, cacheObject.relativePath)).exists();
+
+    var dirPath = await fileDir;
+    var file = dirPath.childFile(cacheObject.relativePath);
+    return file.exists();
   }
 
   Future<CacheObject> _getCacheDataFromDatabase(String url) async {
-    var provider = await _cacheObjectProvider;
-    var data = await provider.get(url);
+    final provider = await _cacheInfoRepository;
+    final data = await provider.get(url);
     if (await _fileExists(data)) {
-      _updateCacheDataInDatabase(data);
+      unawaited(_updateCacheDataInDatabase(data));
     }
     _scheduleCleanup();
     return data;
@@ -134,62 +126,63 @@ class CacheStore {
   }
 
   Future<dynamic> _updateCacheDataInDatabase(CacheObject cacheObject) async {
-    var provider = await _cacheObjectProvider;
-    var data = await provider.updateOrInsert(cacheObject);
-    return data;
+    final provider = await _cacheInfoRepository;
+    return provider.updateOrInsert(cacheObject);
   }
 
   Future<void> _cleanupCache() async {
-    var provider = await _cacheObjectProvider;
-    var overCapacity = await provider.getObjectsOverCapacity(_capacity);
-    var oldObjects = await provider.getOldObjects(_maxAge);
+    final toRemove = <int>[];
+    final provider = await _cacheInfoRepository;
 
-    var toRemove = List<int>();
-    overCapacity.forEach((cacheObject) async {
-      _removeCachedFile(cacheObject, toRemove);
-    });
-    oldObjects.forEach((cacheObject) async {
-      _removeCachedFile(cacheObject, toRemove);
-    });
+    final overCapacity = await provider.getObjectsOverCapacity(_capacity);
+    for (final cacheObject in overCapacity) {
+      unawaited(_removeCachedFile(cacheObject, toRemove));
+    }
 
-    await provider.deleteAll(toRemove);
-  }
-
-  emptyCache() async {
-    var provider = await _cacheObjectProvider;
-    var toRemove = List<int>();
-
-    var allObjects = await provider.getAllObjects();
-    allObjects.forEach((cacheObject) async {
-      _removeCachedFile(cacheObject, toRemove);
-    });
+    final oldObjects = await provider.getOldObjects(_maxAge);
+    for (final cacheObject in oldObjects) {
+      unawaited(_removeCachedFile(cacheObject, toRemove));
+    }
 
     await provider.deleteAll(toRemove);
   }
 
-  removeCachedFile(CacheObject cacheObject) async {
-    var provider = await _cacheObjectProvider;
-    var toRemove = List<int>();
-    _removeCachedFile(cacheObject, toRemove);
+  Future<void> emptyCache() async {
+    final provider = await _cacheInfoRepository;
+    final toRemove = <int>[];
+    final allObjects = await provider.getAllObjects();
+    for (final cacheObject in allObjects) {
+      unawaited(_removeCachedFile(cacheObject, toRemove));
+    }
     await provider.deleteAll(toRemove);
   }
 
-  _removeCachedFile(CacheObject cacheObject, List<int> toRemove) async {
+  Future<void> removeCachedFile(CacheObject cacheObject) async {
+    final provider = await _cacheInfoRepository;
+    final toRemove = <int>[];
+    unawaited(_removeCachedFile(cacheObject, toRemove));
+    await provider.deleteAll(toRemove);
+  }
+
+  Future<void> _removeCachedFile(
+      CacheObject cacheObject, List<int> toRemove) async {
     if (!toRemove.contains(cacheObject.id)) {
       toRemove.add(cacheObject.id);
-      if (_memCache.containsKey(cacheObject.url))
+      if (_memCache.containsKey(cacheObject.url)) {
         _memCache.remove(cacheObject.url);
-      if (_futureCache.containsKey(cacheObject.url))
-        _futureCache.remove(cacheObject.url);
     }
-    var file = new File(p.join(await filePath, cacheObject.relativePath));
+      if (_futureCache.containsKey(cacheObject.url)) {
+        unawaited(_futureCache.remove(cacheObject.url));
+      }
+    }
+    final file = (await fileDir).childFile(cacheObject.relativePath);
     if (await file.exists()) {
-      file.delete();
+      unawaited(file.delete());
     }
   }
 
   Future<void> dispose() async {
-    final provider = await _cacheObjectProvider;
+    final provider = await _cacheInfoRepository;
     await provider.close();
   }
 }

@@ -1,3 +1,26 @@
+## [1.2.2] - 2020-04-16
+* Support for RxDart 0.24.x
+
+## [1.2.1] - 2020-04-14
+* Fixed optional parameters in the Content-Type header ([#164](https://github.com/Baseflow/flutter_cache_manager/issues/164)).
+
+## [1.2.0] - 2020-04-10
+* Added getFileStream to CacheManager
+    * getFileStream has an optional parameter 'withProgress' to receive progress.
+    * getFileStream returns a FileResponse which is either a FileInfo or a DownloadProgress.
+* Changes to FileFetcher and FileFetcherResponse:
+    * FileFetcher is now replaced with a FileService which is a class instead of a function.
+    * FileServiceResponse doesn't just give magic headers, but concrete implementation of the needed information.
+    * FileServiceResponse gives a contentStream instead of content for more efficient handling of the data.
+    * FileServiceResponse contains contentLength with information about the total size of the content.
+* Changes in CacheStore for testability:
+    * CleanupRunMinInterval can now be set.
+    * Expects a mockable directory instead of a path.
+* Added CacheInfoRepository interface to possibly replace the current CacheObjectProvider based on sqflite.
+* Changes in WebHelper
+  * Files are now always saved with a new name. Files are first saved to storage before old file is removed.
+* General code quality improvements
+
 ## [1.1.3] - 2019-10-17
 * Use try-catch in WebHelper so VM understands that errors are not uncaught.
 
