@@ -7,6 +7,7 @@ import 'package:flutter_cache_manager/src/storage/cache_object.dart';
 import 'package:flutter_cache_manager/src/result/file_info.dart';
 import 'package:flutter_cache_manager/src/storage/cache_object_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:pedantic/pedantic.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -15,6 +16,14 @@ import 'package:sqflite/sqflite.dart';
 ///Released under MIT License.
 
 class CacheStore {
+  Future<Directory> getPrivateDirectory() async {
+    if (Platform.isIOS) {
+      return getLibraryDirectory();
+    } else {
+      return getApplicationDocumentsDirectory();
+    }
+  }
+
   Duration cleanupRunMinInterval;
 
   final _futureCache = <String, Future<CacheObject>>{};
